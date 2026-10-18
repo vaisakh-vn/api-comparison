@@ -1,0 +1,51 @@
+services:
+  rest:
+    build: .
+    command: npx tsx rest/server.ts
+    ports:
+      - "3001:3001"
+
+  graphql:
+    build: .
+    command: npx tsx graphql/server.ts
+    ports:
+      - "4000:4000"
+
+  grpc:
+    build: .
+    command: npx tsx grpc/server.ts
+    ports:
+      - "50051:50051"
+
+  # Demo services — not started by default (profiles: demos).
+  # Run with:  docker compose run --rm demo-rest
+  # Servers must be running first:  docker compose up -d
+  demo-rest:
+    build: .
+    command: npx tsx demos/rest-demo.ts
+    environment:
+      - REST_URL=http://rest:3001
+    depends_on:
+      - rest
+    profiles:
+      - demos
+
+  demo-graphql:
+    build: .
+    command: npx tsx demos/graphql-demo.ts
+    environment:
+      - GRAPHQL_URL=http://graphql:4000/
+    depends_on:
+      - graphql
+    profiles:
+      - demos
+
+  demo-grpc:
+    build: .
+    command: npx tsx demos/grpc-demo.ts
+    environment:
+      - GRPC_HOST=grpc:50051
+    depends_on:
+      - grpc
+    profiles:
+      - demos

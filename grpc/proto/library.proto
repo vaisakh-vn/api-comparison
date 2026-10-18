@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package library;
+
+// ══════════════════════════════════════════════════════════════
+// gRPC contract: the .proto file
+//
+// This file serves multiple roles that REST/GraphQL separate:
+//   1. Schema definition (like GraphQL SDL or OpenAPI spec)
+//   2. Code generator for clients AND servers in any language
+//   3. Serialization format spec (Protocol Buffers = binary, not JSON)
+//
+// Key things to notice:
+//   • Every field has a NUMBER (= 1, = 2, …)
+//     Never reuse or delete a number — it breaks backward compatibility.
+//   • `stream` keyword enables server-side streaming responses.
+//     REST has no equivalent; GraphQL needs subscriptions/SSE.
+//   • Message types are strict — no extra fields slip through.
+// ══════════════════════════════════════════════════════════════
+
+service LibraryService {
+  // Unary: one request → one response (same as REST GET or GraphQL query)
+  rpc GetBook    (GetBookRequest)    returns (Book);
+  rpc GetAuthor  (GetAuthorRequest)  returns (Author);
+  rpc AddBook    (AddBookRequest)    returns (Book);
+
+  // Server streaming: one request → a stream of responses
+  // The client receives each Book as soon as the server writes it.
+  // Great for large result sets, progress, or paginated bulk exports.
+  rpc ListBooks  (ListBooksRequest)  returns (stream Book);
+
+  // Server streaming: simulates real-time push (new books arriving)
+  rpc WatchNewBooks (WatchBooksRequest) returns (stream Book);
+}
+
+// ── Requests ─────────────────────────────────────────────────
+
+message GetBookRequest {
+  string id = 1;
+}
+
+message GetAuthorRequest {
+  string id = 1;
+}
+
+message ListBooksRequest {
+  string genre = 1; // empty string = return all genres
+}
+
+message WatchBooksRequest {
+  int32 interval_seconds = 1;
+}
+
+message AddBookRequest {
+  string title          = 1;
+  string author_id      = 2;
+  int32  published_year = 3;
+  string genre          = 4;
+  string description    = 5;
+}
+
+// ── Response messages ─────────────────────────────────────────
+
+message Book {
+  string id             = 1;
+  string title          = 2;
+  string author_id      = 3;
+  int32  published_year = 4;
+  string genre          = 5;
+  string description    = 6;
+}
+
+message Author {
+  string id   = 1;
+  string name = 2;
+  string bio  = 3;
+}
