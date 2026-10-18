@@ -1,18 +1,17 @@
 # REST vs GraphQL vs gRPC
 
-A hands-on comparison of three API paradigms built over the same domain — a library of books and authors. Run the demos to see the differences live, and use the visual flows and deep-dives below to prepare for interviews.
+A hands-on comparison of three API styles built over the same domain: a library of books, authors and reviews. Run the demos to see the differences live, then use the diagrams below to understand how each one works.
 
 ---
 
 ## Table of Contents
 
-1. [Project setup & running](#setup)
+1. [Setup & running](#setup)
 2. [Architecture overview](#architecture)
 3. [REST — how it works](#rest)
 4. [GraphQL — how it works](#graphql)
 5. [gRPC — how it works](#grpc)
 6. [Side-by-side comparison](#comparison)
-7. [Interview quick-reference](#interview)
 
 ---
 
@@ -42,7 +41,7 @@ docker compose down
 npm install
 ```
 
-Open three separate terminals:
+Start each server in its own terminal:
 
 ```bash
 npm run rest        # → http://localhost:3001
@@ -50,47 +49,51 @@ npm run graphql     # → http://localhost:4000
 npm run grpc        # → localhost:50051
 ```
 
-Run demos from a fourth terminal (servers must be running):
+Then run the demos from another terminal:
 
 ```bash
-npm run demo:rest
-npm run demo:graphql
-npm run demo:grpc
+npm run demo:rest       # over-fetching & under-fetching
+npm run demo:graphql    # the same data in one query
+npm run demo:grpc       # binary protocol & streaming
 ```
 
 ---
 
 ## Architecture overview <a name="architecture"></a>
 
-All three servers share the same in-memory data from `shared/`. No database — data resets on server restart.
+All three servers read the same in-memory data from `shared/data.ts`. There is no database, so data resets when a server restarts.
 
 ```mermaid
-graph TD
-    subgraph Project
-        SD[(shared/data.ts\nbooks · authors · reviews)]
+flowchart LR
+    C1["REST client<br/>curl / browser"] -- "HTTP/1.1 + JSON" --> REST["REST server<br/>Express · :3001"]
+    C2["GraphQL client<br/>Apollo Sandbox"] -- "HTTP/1.1 + JSON" --> GQL["GraphQL server<br/>Apollo · :4000"]
+    C3["gRPC client<br/>grpcurl / demo"] -- "HTTP/2 + Protobuf" --> GRPC["gRPC server<br/>:50051"]
 
-        REST[REST Server\nExpress · port 3001]
-        GQL[GraphQL Server\nApollo · port 4000]
-        GRPC[gRPC Server\nport 50051]
+    REST --> DATA[("shared/data.ts<br/>books · authors · reviews")]
+    GQL --> DATA
+    GRPC --> DATA
 
-        SD --> REST
-        SD --> GQL
-        SD --> GRPC
-    end
+    classDef client fill:#f1f5f9,stroke:#64748b,color:#0f172a
+    classDef rest   fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#052e16
+    classDef gql    fill:#fce7f3,stroke:#be185d,stroke-width:2px,color:#500724
+    classDef grpc   fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#172554
+    classDef data   fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#451a03
 
-    C1[REST Client\ncurl / browser] -->|HTTP/1.1 · JSON| REST
-    C2[GraphQL Client\nbrowser / Apollo Sandbox] -->|HTTP/1.1 · JSON| GQL
-    C3[gRPC Client\ngrpcurl / demo script] -->|HTTP/2 · Protobuf| GRPC
+    class C1,C2,C3 client
+    class REST rest
+    class GQL gql
+    class GRPC grpc
+    class DATA data
 ```
 
 ```
 shared/               shared types and in-memory data
-rest/server.ts        Express — port 3001
-graphql/server.ts     Apollo Server — port 4000
+rest/server.ts        Express server
+graphql/server.ts     Apollo Server
 grpc/
   proto/library.proto service contract and message definitions
-  server.ts           gRPC server — port 50051
-demos/                runnable scripts that call each API and explain the output
+  server.ts           gRPC server
+demos/                scripts that call each API and explain the output
 ```
 
 ---
@@ -99,122 +102,88 @@ demos/                runnable scripts that call each API and explain the output
 
 ### Core idea
 
-REST (Representational State Transfer) is an architectural style proposed by Roy Fielding in 2000. It models an API as a set of **resources**, each with its own URL, interacted with through standard HTTP verbs.
+REST models an API as a set of **resources**, each with its own URL. The client acts on them with standard HTTP verbs, and every request is stateless — it carries everything the server needs.
 
-```
-GET    /books          → list all books
-GET    /books/1        → get one book
-POST   /books          → create a book
-PUT    /books/1        → replace a book
-PATCH  /books/1        → partially update a book
-DELETE /books/1        → delete a book
-```
+| Request | Meaning |
+|---|---|
+| `GET /books` | List all books |
+| `GET /books/1` | Get one book |
+| `POST /books` | Create a book |
+| `PUT /books/1` | Replace a book |
+| `DELETE /books/1` | Delete a book |
 
 ### Request / response flow
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant S as REST Server
+    participant S as REST server
 
     C->>S: GET /books/1
-    S-->>C: 200 { id, title, authorId, genre, description... }
+    S-->>C: 200 OK + book JSON
 
-    C->>S: POST /books  body: { title, authorId... }
-    S-->>C: 201 { id: "6", title... }
+    C->>S: POST /books + new book JSON
+    S-->>C: 201 Created + saved book
 
     C->>S: DELETE /books/6
     S-->>C: 204 No Content
 ```
 
-### The under-fetching problem
+The HTTP status code tells the client what happened: `2xx` success, `4xx` client error, `5xx` server error.
 
-To render one book card showing **title + author name + average rating**, REST needs **three separate HTTP requests**:
+### Under-fetching: too many round trips
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as REST Server
-
-    C->>S: GET /books/1
-    S-->>C: { id, title, authorId: "1", genre... }
-    Note over C: Has authorId but NOT the author name.<br/>Must make a second call.
-
-    C->>S: GET /authors/1
-    S-->>C: { id, name, bio }
-    Note over C: Has author name but NOT reviews.<br/>Must make a third call.
-
-    C->>S: GET /books/1/reviews
-    S-->>C: [{ rating: 5 }, { rating: 4 }]
-    Note over C: 3 round trips to build 1 UI card.
-```
-
-### The over-fetching problem
-
-Even for a simple title list, REST returns every field on every resource:
+To show one card with **title + author name + average rating**, the client needs three requests, because each endpoint returns only its own resource:
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant S as REST Server
+    participant S as REST server
 
-    C->>S: GET /books  (UI only needs titles for a dropdown)
-    S-->>C: [{ id, title, authorId, publishedYear, genre, description }, ...]
-    Note over C: Needed 1 field. Received 6 fields × 5 books.<br/>25 fields transferred, 5 used.
+    C->>S: 1) GET /books/1
+    S-->>C: title, authorId, genre, description
+    Note over C: Has authorId, but not the author's name
+
+    C->>S: 2) GET /authors/1
+    S-->>C: name, bio
+    Note over C: Has the name, but not the ratings
+
+    C->>S: 3) GET /books/1/reviews
+    S-->>C: list of ratings and comments
+    Note over C: 3 round trips to build 1 card
 ```
 
-### The 6 REST constraints (Fielding's original definition)
+### Over-fetching: too much data
 
-| Constraint | What it means |
-|---|---|
-| **Client–server** | UI and data storage are separated |
-| **Stateless** | Each request carries all the context it needs — no session on the server |
-| **Cacheable** | Responses must declare whether they can be cached |
-| **Uniform interface** | Resources are identified by URIs; interactions are standardised |
-| **Layered system** | Client doesn't know if it's talking to the real server or a proxy/CDN |
-| **Code on demand** *(optional)* | Server can send executable code to the client (e.g. JavaScript) |
+For a dropdown that only needs titles, the server still sends every field of every book:
 
-### HTTP verbs and idempotency
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as REST server
 
-Idempotent means calling the same operation multiple times produces the same result as calling it once — important for safe retries.
+    C->>S: GET /books
+    S-->>C: 5 books × 6 fields each
+    Note over C: Needed only "title" — 25 of 30 fields wasted
+```
 
-| Verb | Idempotent? | Safe? | Typical use |
-|---|---|---|---|
-| GET | ✔ | ✔ | Read |
-| PUT | ✔ | ✗ | Full replace |
-| DELETE | ✔ | ✗ | Remove |
-| POST | ✗ | ✗ | Create, non-idempotent actions |
-| PATCH | ✗ | ✗ | Partial update |
+### Key properties
 
-### HTTP status codes to know
-
-| Code | Meaning |
-|---|---|
-| 200 OK | Success |
-| 201 Created | Resource created (use with POST) |
-| 204 No Content | Success, no body (use with DELETE) |
-| 400 Bad Request | Malformed request from the client |
-| 401 Unauthorized | Not authenticated |
-| 403 Forbidden | Authenticated but not allowed |
-| 404 Not Found | Resource doesn't exist |
-| 409 Conflict | State conflict (e.g. duplicate) |
-| 422 Unprocessable Entity | Validation error |
-| 500 Internal Server Error | Server bug |
-
-### REST versioning strategies
-
-| Strategy | Example | Notes |
+| Verb | Idempotent? | Use |
 |---|---|---|
-| URL path | `/v1/books` | Simple, explicit — most common |
-| Header | `Accept: application/vnd.api.v2+json` | Clean URLs, harder to test in browser |
-| Query param | `/books?version=2` | Easy but can pollute caches |
+| GET | Yes | Read (safe, cacheable) |
+| PUT | Yes | Full replace |
+| DELETE | Yes | Remove |
+| POST | No | Create |
+| PATCH | No | Partial update |
+
+*Idempotent* means repeating the call gives the same result as calling it once, so it is safe to retry.
 
 ### When to choose REST
 
-- Public-facing APIs (developers expect it)
-- Simple CRUD with little nesting
-- Teams that need HTTP-level caching (CDNs, ETags)
-- When GET requests should be bookmarkable or shareable
+- Public APIs that many developers will use
+- Simple CRUD without deep nesting
+- When you want HTTP caching from browsers and CDNs
 
 ---
 
@@ -222,112 +191,19 @@ Idempotent means calling the same operation multiple times produces the same res
 
 ### Core idea
 
-GraphQL is a **query language for APIs** developed by Facebook in 2012. Instead of many endpoints there is one (`/graphql`). The **client declares exactly what it needs** — the server sends nothing more, nothing less.
+GraphQL exposes **one endpoint** (`/graphql`) and a typed **schema**. The client sends a query describing exactly the fields it wants, and the response has exactly that shape.
 
-### Request / response flow — solving REST's problems
-
-The same three-request REST scenario becomes a single query:
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as GraphQL Server
-    participant R as Resolvers
-
-    C->>S: POST /graphql
-    Note over C,S: query {<br/>  book(id: "1") {<br/>    title<br/>    author { name }<br/>    averageRating<br/>  }<br/>}
-
-    S->>R: Query.book("1") → finds book row
-    R->>R: Book.author → looks up author by authorId
-    R->>R: Book.averageRating → computes from reviews
-    Note over R: Book.genre, Book.description NOT called.<br/>Client didn't ask for them.
-
-    S-->>C: 200 { data: { book: { title, author: { name }, averageRating } } }
-    Note over C: 1 request. Exact fields. No wasted data.
-```
-
-### How the resolver chain works
-
-Every field in the schema can have a resolver. GraphQL only calls a resolver if the client's query includes that field. Unused fields cost nothing.
-
-```mermaid
-flowchart TD
-    Q["query {<br/>  authors {<br/>    name<br/>    books { title reviews { rating } }<br/>  }<br/>}"]
-
-    Q --> QR["Query.authors\n→ returns all authors"]
-
-    QR --> AN["Author.name\n(trivial — direct field)"]
-    QR --> BR["Author.books\n→ filters books by authorId"]
-
-    BR --> BT["Book.title\n(trivial — direct field)"]
-    BR --> RR["Book.reviews\n→ filters reviews by bookId"]
-
-    RR --> RT["Review.rating\n(trivial — direct field)"]
-
-    style AN fill:#d4edda
-    style BT fill:#d4edda
-    style RT fill:#d4edda
-    style QR fill:#cce5ff
-    style BR fill:#cce5ff
-    style RR fill:#cce5ff
-```
-
-Green = trivial field access. Blue = resolver that does real work.
-
-### The three operation types
-
-| Type | Purpose | REST equivalent |
+| Operation | Purpose | REST equivalent |
 |---|---|---|
-| `query` | Read data | GET |
-| `mutation` | Write data | POST / PUT / PATCH / DELETE |
-| `subscription` | Real-time event stream | WebSocket / SSE |
+| `query` | Read | GET |
+| `mutation` | Write | POST / PUT / DELETE |
+| `subscription` | Real-time updates | WebSocket / SSE |
 
-### The SDL schema — the client-server contract
+### Request / response flow
 
-```graphql
-type Book {
-  id: ID!
-  title: String!
-  author: Author!        # resolver runs only if client asks for this
-  averageRating: Float   # computed on demand
-}
-
-type Query {
-  book(id: ID!): Book
-  books: [Book!]!
-}
-```
-
-`!` means non-nullable. The SDL is self-documenting — clients can introspect it at runtime without reading any external docs.
-
-### The N+1 problem
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as GraphQL Server
-    participant DB as Database
-
-    C->>S: query { books { title author { name } } }
-
-    S->>DB: SELECT * FROM books  (1 query)
-    DB-->>S: [book1, book2, book3, book4, book5]
-
-    S->>DB: SELECT * FROM authors WHERE id = 1
-    S->>DB: SELECT * FROM authors WHERE id = 1
-    S->>DB: SELECT * FROM authors WHERE id = 2
-    S->>DB: SELECT * FROM authors WHERE id = 3
-    S->>DB: SELECT * FROM authors WHERE id = 3
-
-    Note over S,DB: 5 books → 5 author queries = N+1 problem.<br/>Fix: DataLoader batches them into<br/>SELECT * FROM authors WHERE id IN (1,2,3)
-```
-
-### Exploring this project's GraphQL API
-
-Open **http://localhost:4000** for Apollo Sandbox, then try:
+The same book card that took three REST calls becomes one request:
 
 ```graphql
-# Precise query — only the fields you ask for
 query {
   book(id: "1") {
     title
@@ -335,8 +211,96 @@ query {
     averageRating
   }
 }
+```
 
-# Deeply nested in one shot
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as GraphQL server
+    participant R as Resolvers
+
+    C->>S: POST /graphql with the query
+    S->>R: Query.book(id 1)
+    R-->>S: book row
+    S->>R: Book.author
+    R-->>S: author name
+    S->>R: Book.averageRating
+    R-->>S: 4.5
+    Note over S,R: genre and description are never resolved — not requested
+    S-->>C: 200 OK + JSON with exactly title, author.name, averageRating
+```
+
+### How resolvers work
+
+Each field in the schema can have a **resolver** function. GraphQL walks the query tree and calls a resolver only for the fields the client asked for.
+
+For this query:
+
+```graphql
+query {
+  authors {
+    name
+    books {
+      title
+      reviews { rating }
+    }
+  }
+}
+```
+
+GraphQL runs this resolver chain:
+
+```mermaid
+flowchart TD
+    A["Query.authors<br/>returns every author"]
+    A --> AN["Author.name<br/>plain field"]
+    A --> AB["Author.books<br/>filters books by authorId"]
+    AB --> BT["Book.title<br/>plain field"]
+    AB --> BR["Book.reviews<br/>filters reviews by bookId"]
+    BR --> RR["Review.rating<br/>plain field"]
+
+    classDef root  fill:#ede9fe,stroke:#6d28d9,stroke-width:2px,color:#2e1065
+    classDef logic fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#172554
+    classDef plain fill:#f1f5f9,stroke:#64748b,stroke-width:1px,color:#0f172a
+
+    class A root
+    class AB,BR logic
+    class AN,BT,RR plain
+```
+
+- **Purple** — root `Query` resolver, the entry point
+- **Blue** — resolvers with real logic (they look up related data)
+- **Grey** — plain fields, read straight off the parent object
+
+`Book.author`, `Book.averageRating`, `Book.genre` and the rest are never called, because the query didn't ask for them.
+
+### The N+1 problem
+
+Resolvers run per item. Asking for every book's author runs the author resolver once **per book**:
+
+```mermaid
+sequenceDiagram
+    participant S as GraphQL server
+    participant DB as Database
+
+    S->>DB: SELECT books  (1 query)
+    DB-->>S: 5 books
+    S->>DB: SELECT author 1
+    S->>DB: SELECT author 1
+    S->>DB: SELECT author 2
+    S->>DB: SELECT author 3
+    S->>DB: SELECT author 3
+    Note over S,DB: 1 + 5 = N+1 queries
+```
+
+The standard fix is **DataLoader**, which collects those lookups and sends one batched query: `SELECT authors WHERE id IN (1, 2, 3)`.
+
+### Try it
+
+Open **http://localhost:4000** for Apollo Sandbox:
+
+```graphql
+# Nested data in one request
 query {
   authors {
     name
@@ -347,7 +311,7 @@ query {
   }
 }
 
-# Mutation
+# Write data
 mutation {
   addBook(
     title: "God Emperor of Dune"
@@ -364,10 +328,9 @@ mutation {
 
 ### When to choose GraphQL
 
-- Mobile clients where bandwidth matters
-- Products with multiple front-end clients (web, iOS, Android) needing different shapes of the same data
-- Rapidly evolving APIs where adding fields doesn't break existing clients
-- Complex, deeply nested data requirements
+- Several clients (web, iOS, Android) that need different shapes of the same data
+- Mobile apps where bandwidth matters
+- Deeply nested, related data
 
 ---
 
@@ -375,234 +338,183 @@ mutation {
 
 ### Core idea
 
-gRPC is a high-performance RPC (Remote Procedure Call) framework from Google. The client calls methods on a remote server **as if they were local functions**. The contract is a `.proto` file that drives code generation for both sides in any language.
-
-### Overall architecture
+gRPC lets a client call a function on a remote server **as if it were local**. The contract lives in a `.proto` file, which tools use to generate matching client and server code in many languages. Messages travel as binary **Protocol Buffers** over **HTTP/2**.
 
 ```mermaid
 flowchart LR
-    PROTO[library.proto\nservice contract]
+    P["library.proto<br/>the contract"] -- "generate" --> CS["Client stub<br/>any language"]
+    P -- "generate" --> SS["Server stub<br/>any language"]
+    CS -- "binary Protobuf over HTTP/2" --> SS
 
-    PROTO -->|code generation| SC[Server stub\nTypeScript]
-    PROTO -->|code generation| CC[Client stub\nTypeScript / Go / Python / Java...]
+    classDef proto fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#451a03
+    classDef stub  fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#172554
 
-    CC -->|HTTP/2 · Protobuf binary| SC
-    SC -->|HTTP/2 · Protobuf binary| CC
+    class P proto
+    class CS,SS stub
 ```
 
-### The four communication patterns
-
-This is gRPC's biggest differentiator — REST only has the first:
+### Unary call (one request, one response)
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant S as gRPC Server
+    participant S as gRPC server
 
-    Note over C,S: 1. Unary — one request, one response
-    C->>S: GetBook { id: "1" }
-    S-->>C: Book { title: "Dune", ... }
-
-    Note over C,S: 2. Server Streaming — one request, stream of responses
-    C->>S: ListBooks { genre: "" }
-    S-->>C: Book { title: "Dune" }
-    S-->>C: Book { title: "Foundation" }
-    S-->>C: Book { title: "I, Robot" }
-    S-->>C: ⟨END OF STREAM⟩
-
-    Note over C,S: 3. Client Streaming — stream of requests, one response
-    C->>S: UploadChunk { data: ... }
-    C->>S: UploadChunk { data: ... }
-    C->>S: UploadChunk { data: ... }
-    S-->>C: UploadResult { size: 3072 }
-
-    Note over C,S: 4. Bidirectional Streaming — both sides stream simultaneously
-    C->>S: Message { text: "hello" }
-    S-->>C: Message { text: "hi there" }
-    C->>S: Message { text: "how are you?" }
-    S-->>C: Message { text: "fine, thanks" }
+    C->>S: GetBook(id 1)  — binary
+    S-->>C: Book message  — binary
+    C->>S: GetBook(id 99)
+    S-->>C: status NOT_FOUND (code 5)
 ```
 
-### Real-time push streaming
+gRPC has its own status codes (`OK`, `NOT_FOUND`, `UNAVAILABLE`, `DEADLINE_EXCEEDED`…) instead of HTTP status codes.
+
+### Server streaming (one request, many responses)
+
+`ListBooks` sends each book as soon as it is ready, over one open connection:
 
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant S as gRPC Server
+    participant S as gRPC server
 
-    C->>S: WatchNewBooks { interval_seconds: 2 }
-    Note over S: connection stays open
-
-    S-->>C: Book { title: "Newly Published Book 1" }
-    Note over C,S: 2 seconds later...
-    S-->>C: Book { title: "Newly Published Book 2" }
-    Note over C,S: 2 seconds later...
-    S-->>C: Book { title: "Newly Published Book 3" }
-    S-->>C: ⟨END OF STREAM⟩
-
-    Note over C: REST needs polling every N seconds.<br/>GraphQL needs a WebSocket subscription.<br/>gRPC streaming is one proto annotation.
+    C->>S: ListBooks()
+    S-->>C: Book "Dune"
+    S-->>C: Book "Dune Messiah"
+    S-->>C: Book "Foundation"
+    S-->>C: ...
+    S-->>C: stream closed
+    Note over C: Client handles each book as it arrives
 ```
 
-### Protocol Buffers — the wire format
+`WatchNewBooks` keeps the stream open and pushes events over time — something REST can only approximate with polling:
 
-Instead of JSON, gRPC uses binary Protocol Buffers. Fields are identified by their **number**, not their name.
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as gRPC server
+
+    C->>S: WatchNewBooks(interval 2s)
+    S-->>C: Book "Newly Published Book 1"
+    Note over C,S: 2 seconds later
+    S-->>C: Book "Newly Published Book 2"
+    Note over C,S: 2 seconds later
+    S-->>C: Book "Newly Published Book 3"
+    S-->>C: stream closed
+```
+
+### The four call types
+
+This project implements the first two.
+
+| Type | Shape | Example use |
+|---|---|---|
+| Unary | 1 request → 1 response | Fetch a record |
+| Server streaming | 1 request → many responses | Live feed, large export |
+| Client streaming | many requests → 1 response | File upload |
+| Bidirectional | many ↔ many | Chat |
+
+### Protocol Buffers on the wire
+
+Fields are identified by **number**, not name, which is why the binary form is so compact:
 
 ```protobuf
 message Book {
-  string id    = 1;   // ← field NUMBER, not value
+  string id    = 1;
   string title = 2;
   int32  year  = 3;
 }
 ```
 
-```mermaid
-graph LR
-    subgraph JSON ~120 bytes
-        J['{"id":"1","title":"Dune","publishedYear":1965}']
-    end
-    subgraph Protobuf ~25 bytes
-        P["0a 01 31 12 04 44 75 6e 65 18 9d 0f ..."]
-    end
-    JSON -->|~40% smaller\n~6x faster to parse| Protobuf
+```
+JSON     {"id":"1","title":"Dune","year":1965}      37 bytes
+Protobuf 0a 01 31  12 04 44 75 6e 65  18 ad 0f      12 bytes
+         └─ id ─┘  └──── title ────┘  └ year ┘
 ```
 
-**Critical rule:** never delete or reuse a field number. Old clients compiled against the previous schema would silently misread data if a number is reassigned. Deprecated fields are marked `reserved`.
+Never reuse or delete a field number — older clients would decode the bytes as the wrong field. Mark removed numbers as `reserved` instead.
 
-### HTTP/2 transport advantages
+### Browsers
 
-| Feature | Benefit vs HTTP/1.1 |
-|---|---|
-| **Multiplexing** | Many concurrent RPCs over one TCP connection — no head-of-line blocking |
-| **Header compression** | Repeated auth tokens and metadata compressed with HPACK |
-| **Binary framing** | Lower overhead than HTTP/1.1 text frames |
-| **Persistent connection** | Foundation for server streaming without polling |
+Browsers can't speak native gRPC, so web apps go through a proxy:
 
-### gRPC error codes
+```mermaid
+flowchart LR
+    B["Browser"] -- "gRPC-Web" --> P["Proxy<br/>e.g. Envoy"]
+    P -- "native gRPC over HTTP/2" --> S["gRPC server"]
 
-gRPC uses its own vocabulary — not HTTP status codes:
+    classDef client fill:#f1f5f9,stroke:#64748b,color:#0f172a
+    classDef proxy  fill:#fef3c7,stroke:#b45309,stroke-width:2px,color:#451a03
+    classDef server fill:#dbeafe,stroke:#1d4ed8,stroke-width:2px,color:#172554
 
-| Code | Value | Meaning |
-|---|---|---|
-| OK | 0 | Success |
-| CANCELLED | 1 | Client cancelled the request |
-| DEADLINE_EXCEEDED | 4 | Request timed out |
-| NOT_FOUND | 5 | Resource doesn't exist |
-| ALREADY_EXISTS | 6 | Conflict |
-| PERMISSION_DENIED | 7 | Not authorised |
-| UNAVAILABLE | 14 | Server temporarily unavailable |
+    class B client
+    class P proxy
+    class S server
+```
 
-### Exploring with grpcurl
+### Try it
 
 ```bash
 brew install grpcurl
 
-grpcurl -plaintext localhost:50051 list
-grpcurl -plaintext -d '{"id":"1"}' localhost:50051 library.LibraryService/GetBook
-grpcurl -plaintext -d '{"genre":""}' localhost:50051 library.LibraryService/ListBooks
+grpcurl -plaintext -import-path grpc/proto -proto library.proto \
+  -d '{"id":"1"}' localhost:50051 library.LibraryService/GetBook
+
+grpcurl -plaintext -import-path grpc/proto -proto library.proto \
+  -d '{}' localhost:50051 library.LibraryService/ListBooks
 ```
 
-### Browser limitation
-
-```mermaid
-flowchart LR
-    B[Browser] -->|cannot control\nHTTP/2 frames| X((✗))
-    B -->|gRPC-Web\nHTTP/1.1 compatible| P[Envoy Proxy]
-    P -->|native gRPC\nHTTP/2| S[gRPC Server]
-```
-
-Browsers cannot use native gRPC. **gRPC-Web** is a spec that adapts it to HTTP/1.1 via a server-side proxy (typically Envoy).
+(The server doesn't enable reflection, so grpcurl needs the `.proto` file passed in.)
 
 ### When to choose gRPC
 
-- Internal microservice-to-microservice communication
-- High-throughput or low-latency requirements (trading systems, mobile backends)
-- Real-time streaming (sensor telemetry, live dashboards, file transfers)
-- Polyglot systems where services are in different languages
-- When a strictly enforced binary contract matters more than human-readability
+- Service-to-service calls inside your backend
+- High throughput or low latency
+- Streaming data in either direction
+- Teams using several programming languages
 
 ---
 
 ## Side-by-side comparison <a name="comparison"></a>
 
+Fetching one book card (title + author name + rating):
+
 ```mermaid
-flowchart TD
-    subgraph REST
-        RC[Client] -->|"GET /books/1\nGET /authors/1\nGET /books/1/reviews\n3 requests"| RS[Server]
-        RS -->|"JSON\nfixed shape\nall fields always"| RC
-    end
+sequenceDiagram
+    participant C as Client
+    participant R as REST
+    participant G as GraphQL
+    participant P as gRPC
 
-    subgraph GraphQL
-        GC[Client] -->|"POST /graphql\n{ book { title author { name } } }\n1 request"| GS[Server]
-        GS -->|"JSON\nexact fields requested\nnothing extra"| GC
-    end
+    Note over C,R: REST — 3 round trips, every field returned
+    C->>R: GET /books/1
+    R-->>C: book JSON
+    C->>R: GET /authors/1
+    R-->>C: author JSON
+    C->>R: GET /books/1/reviews
+    R-->>C: reviews JSON
 
-    subgraph gRPC
-        PC[Client] -->|"GetBook(id)\nbinary protobuf\nHTTP/2"| PS[Server]
-        PS -->|"Book message\nbinary protobuf\nor stream of messages"| PC
-    end
+    Note over C,G: GraphQL — 1 round trip, only requested fields
+    C->>G: POST /graphql with one query
+    G-->>C: title, author.name, averageRating
+
+    Note over C,P: gRPC — one call per RPC, compact binary messages
+    C->>P: GetBook(id 1)
+    P-->>C: Book message
+    C->>P: GetAuthor(id 1)
+    P-->>C: Author message
 ```
+
+gRPC's response shape is fixed by the `.proto` file, like REST. To cut round trips you would add a purpose-built RPC (e.g. `GetBookCard`) that returns everything in one message. This project has no reviews RPC, so the rating isn't available over gRPC.
 
 |  | REST | GraphQL | gRPC |
 |---|---|---|---|
-| **Endpoint** | One per resource | Single `/graphql` | One per method (in `.proto`) |
-| **Schema / contract** | None by default (OpenAPI optional) | SDL — built in | `.proto` — built in |
-| **Wire format** | JSON | JSON | Protocol Buffers (binary) |
-| **Transport** | HTTP/1.1 | HTTP/1.1 | HTTP/2 |
-| **Over-fetching** | Yes — fixed response shape | No — client selects fields | No — message types are exact |
-| **Under-fetching** | Yes — multiple round trips | No — nested queries | No — compose messages as needed |
-| **Streaming** | Not built in | Subscriptions (WebSocket/SSE) | Built in (4 patterns) |
+| **Endpoints** | One per resource | One (`/graphql`) | One per method |
+| **Contract** | Optional (OpenAPI) | SDL schema | `.proto` file |
+| **Format** | JSON | JSON | Protobuf (binary) |
+| **Transport** | HTTP/1.1+ | HTTP/1.1+ | HTTP/2 |
+| **Response shape** | Fixed by server | Chosen by client | Fixed by `.proto` |
+| **Streaming** | No | Subscriptions | Built in |
 | **Browser support** | Native | Native | Needs gRPC-Web proxy |
-| **Caching** | HTTP caching (CDN-friendly) | Hard (single POST endpoint) | Application-level only |
-| **Error model** | HTTP status codes | HTTP 200 + `errors` array | gRPC status codes |
-| **Human-readable** | Yes | Yes | No (binary) |
-| **Best for** | Public APIs, simple CRUD | Complex/nested data, mobile | Internal services, streaming |
-
----
-
-## Interview quick-reference <a name="interview"></a>
-
-### Common REST questions
-
-**Q: What makes an API truly RESTful?**  
-Following Fielding's six constraints — most importantly: stateless requests, a uniform interface (standard HTTP verbs + meaningful URIs), and cacheability. Most "REST" APIs in the wild are REST-ish — they skip HATEOAS and proper cacheability.
-
-**Q: What is HATEOAS?**  
-Hypermedia As The Engine Of Application State — responses include links to related actions so the client can navigate the API without hard-coded URLs. Rarely implemented in practice.
-
-**Q: How do you handle versioning?**  
-Most common: URL path (`/v1/`). More RESTful: `Accept` header versioning. Always avoid silent breaking changes.
-
-**Q: GET vs POST — when would you use POST for a read?**  
-When query parameters are too large for a URL, or contain sensitive data you don't want in server logs or browser history (e.g. complex search filters with PII).
-
----
-
-### Common GraphQL questions
-
-**Q: How does GraphQL prevent over-fetching?**  
-The client's query lists exactly the fields it needs. Resolvers only execute for requested fields. The server never sends more than was asked for.
-
-**Q: What is the N+1 problem and how do you fix it?**  
-When resolving a list of N items where each item triggers a resolver that makes a DB call, you end up with N+1 total queries. Fix: **DataLoader** batches all those calls within one event-loop tick into a single `SELECT … WHERE id IN (…)`.
-
-**Q: Why is HTTP caching harder with GraphQL?**  
-All requests go to `POST /graphql`. HTTP caches work on URL + method. Two different queries have the same URL. Workarounds: persisted queries (APQ) and client-side normalised caches (Apollo Client, Relay).
-
-**Q: What is introspection and why might you disable it in production?**  
-Clients can query `__schema` to discover every type and field. Useful for tooling, but exposes your full data model to attackers — commonly disabled in production.
-
----
-
-### Common gRPC questions
-
-**Q: Why can't you use gRPC directly in a browser?**  
-Browsers expose `fetch`/`XMLHttpRequest` which don't allow raw control of HTTP/2 frames. gRPC requires that control for streaming and binary framing. **gRPC-Web** adapts gRPC to HTTP/1.1 with a server-side proxy.
-
-**Q: What happens if you reuse a Protocol Buffers field number?**  
-The old client will interpret the new field's binary data as the old field's type, silently producing corrupted data. Always mark removed fields as `reserved` to prevent reuse.
-
-**Q: What is the difference between unary and streaming RPCs?**  
-Unary: one request, one response. Server streaming: one request, server sends a sequence. Client streaming: client sends a sequence, server replies once. Bidirectional: both sides stream concurrently over one open connection.
-
-**Q: When would you use gRPC over REST internally?**  
-When you need lower latency (binary format, HTTP/2 multiplexing), strict contracts between services, server-push streaming, or when services are in different languages and you want generated, type-safe clients everywhere.
+| **HTTP caching** | Easy | Hard | Not applicable |
+| **Errors** | HTTP status codes | `errors` array in body | gRPC status codes |
+| **Best for** | Public APIs, CRUD | Flexible client data needs | Internal services, streaming |
